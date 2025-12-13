@@ -7,7 +7,9 @@ from models.networks import *
 from models.loss import *
 import scipy.io as sio
 import sys
-from torchinterp1d import Interp1d
+from models.interp1d import Interp1d
+
+interp1d_fn = Interp1d.apply  # use static method
 import os
 import argparse
 
@@ -78,10 +80,9 @@ def interp1d(y, x, x_new):
     N = y.shape[0]
     out = []
     for i in range(N):
-        y_new = None
-        y_new = Interp1d()(x[i], y[i], x_new[i], y_new).unsqueeze(0)   
+        y_new = interp1d_fn(x[i], y[i], x_new[i]).unsqueeze(0)
         out.append(y_new)
-            
+
     return torch.cat(out, 0).detach()              
         
 

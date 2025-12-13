@@ -23,9 +23,13 @@ def L2_loss_f(input, target):
     Returns:
     - loss: PyTorch Variable containing the (scalar) L2 loss
     '''
-      
-    input_f = torch.fft(input.transpose(1, 2), 1)    # N x L x 2,  batched 1D FFT
-    input_f = input_f.transpose(1, 2)                # N x 2 x L,  batched 1D FFT
+
+    # Convert real/imag channels to complex tensor: N x 2 x L -> N x L (complex)
+    input_complex = torch.complex(input[:, 0, :], input[:, 1, :])  # N x L
+    # Perform 1D FFT along the last dimension
+    input_f_complex = torch.fft.fft(input_complex, dim=-1)  # N x L (complex)
+    # Convert back to real/imag channels: N x L (complex) -> N x 2 x L
+    input_f = torch.stack([input_f_complex.real, input_f_complex.imag], dim=1)  # N x 2 x L
 
     criterion = nn.MSELoss()
     loss = criterion(input_f, target)

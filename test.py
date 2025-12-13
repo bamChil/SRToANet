@@ -7,7 +7,9 @@ from models.networks import *
 from models.loss import *
 import scipy.io as sio
 import sys
-from torchinterp1d import Interp1d
+from models.interp1d import Interp1d
+
+interp1d_fn = Interp1d.apply  # use static method
 import os
 import argparse
 import matplotlib.pyplot as plt
@@ -61,10 +63,9 @@ def interp1d(y, x, x_new):
     N = y.shape[0]
     out = []
     for i in range(N):
-        y_new = None
-        y_new = Interp1d()(x[i], y[i], x_new[i], y_new).unsqueeze(0)   
+        y_new = interp1d_fn(x[i], y[i], x_new[i]).unsqueeze(0)
         out.append(y_new)
-            
+
     return torch.cat(out, 0).detach()
 
 def plot_cir(cir_l, cir_h, cir_h_fake, pred_coarse, pred_fine, gt, folder_path):
@@ -74,9 +75,10 @@ def plot_cir(cir_l, cir_h, cir_h_fake, pred_coarse, pred_fine, gt, folder_path):
     cir_h_fake = cir_h_fake.detach().cpu().numpy()
     pred_coarse = pred_coarse.detach().cpu().numpy()
     pred_fine = pred_fine.detach().cpu().numpy()
-    
+    gt = gt.detach().cpu().numpy()
+
     for i in range(cir_l.shape[0]):
-        
+
         cir_l_real = cir_l[i,0,:]
         cir_l_imag = cir_l[i,1,:]
         cir_l_amp = np.sqrt(cir_l_real**2 + cir_l_imag**2)
@@ -86,8 +88,11 @@ def plot_cir(cir_l, cir_h, cir_h_fake, pred_coarse, pred_fine, gt, folder_path):
         cir_h_real = cir_h[i,0,:]
         cir_h_imag = cir_h[i,1,:]
         cir_h_amp = np.sqrt(cir_h_real**2 + cir_h_imag**2)
-        
-        focus = int(pred_fine[i]//3.75) + np.arange(-np.minimum(int(pred_fine[i]//3.75),30), np.minimum(30, cir_l.shape[2]-int(pred_fine[i]//3.75)))
+
+        pred_fine_val = pred_fine[i].item()
+        pred_coarse_val = pred_coarse[i].item()
+        gt_val = gt[i].item()
+        focus = int(pred_fine_val//3.75) + np.arange(-np.minimum(int(pred_fine_val//3.75),30), np.minimum(30, cir_l.shape[2]-int(pred_fine_val//3.75)))
         plt.figure(figsize=(12, 6))
         plt.subplot(121)
         line1,= plt.plot(x[focus], cir_l_amp[focus])
@@ -105,12 +110,12 @@ def plot_cir(cir_l, cir_h, cir_h_fake, pred_coarse, pred_fine, gt, folder_path):
 
         save_path = os.path.join(folder_path, str(i)+'_cir.png')
         plt.savefig(save_path)
-        
+
         plt.figure(figsize=(8, 6))
         line1,= plt.plot(x[focus], cir_h_fake_amp[focus])
-        line2,= plt.plot(pred_coarse[i]*np.ones(100), np.arange(0, 1, 0.01), linestyle='--')
-        line3,= plt.plot(pred_fine[i]*np.ones(100), np.arange(0, 1, 0.01), linestyle='--')
-        line4,= plt.plot(gt[i]*np.ones(100), np.arange(0, 1, 0.01), linestyle='--', color='black')
+        line2,= plt.plot(pred_coarse_val*np.ones(100), np.arange(0, 1, 0.01), linestyle='--')
+        line3,= plt.plot(pred_fine_val*np.ones(100), np.arange(0, 1, 0.01), linestyle='--')
+        line4,= plt.plot(gt_val*np.ones(100), np.arange(0, 1, 0.01), linestyle='--', color='black')
         plt.xlabel('Distance')
         plt.ylabel('Amplitude')
         plt.legend([line1, line2, line3, line4], ['De-noised high resolution CIR', 'coarse estimation', 'fine estimation', 'ground truth'])

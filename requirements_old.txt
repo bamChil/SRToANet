@@ -1,0 +1,5 @@
+numpy==1.23.5
+torch==1.6.0
+scipy==1.5.4
+matplotlib==3.5.3
+torchinterp1d==1.1

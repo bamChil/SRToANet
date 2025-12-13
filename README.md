@@ -2,6 +2,15 @@
 
 Codes for "Super-Resolution ToA estimation using Neural Networks", EUSIPCO 2020
 
+## Install
+
+```
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+> `requirements_old.txt` is the original code repository runnable environment, but the old torch version is incompatible with modern gpu's, so it's only kept here as a backup.
+
 ## Data Preperation
 
 All the information of channels (time delays, complex attenuation) are stored in `data/Pathset_train.mat`, `data/Pathset_test.mat`, and `data/Pathset_test_802.mat`

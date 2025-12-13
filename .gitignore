@@ -1,0 +1,5 @@
+testdata*
+traindata*
+__pycache__*
+experiments*
+tmp/
