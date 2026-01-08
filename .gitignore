@@ -3,3 +3,4 @@ traindata*
 __pycache__*
 experiments*
 tmp/
+.vscode/
