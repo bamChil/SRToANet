@@ -51,6 +51,10 @@ def make_parser():
     parser.add_argument('--num_test', default=10, type=int,
       help='number of test cirs')
     
+    parser.add_argument('--use_attention', type = str2bool, nargs='?',
+      default=False,
+      help='whether to use attention mechanism for the super resolution network')
+
     return parser
 
 def interp1d(y, x, x_new):
@@ -146,7 +150,7 @@ def test(args):
     folder = os.path.join('experiments', args.name)
 
     # Initialize the models
-    G = unet().to(device)
+    G = unet(use_attention=args.use_attention).to(device)
     RA = Regnet(cir_len*args.up, num_channel).to(device)
     RB = Regnet(args.window_index, num_channel).to(device)
     

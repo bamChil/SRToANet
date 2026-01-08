@@ -67,6 +67,10 @@ def make_parser():
 
     parser.add_argument('--print_interval', type=int, default=20,
       help='number of iterations between each loss print')
+    
+    parser.add_argument('--use_attention', type = str2bool, nargs='?',
+      default=False,
+      help='whether to use attention mechanism for the super resolution network')
 
     return parser
 
@@ -227,7 +231,7 @@ def train(args):
     num_channel = 4 if args.use_ori else 2
 
     # Initialize the models
-    G = unet().to(device)
+    G = unet(use_attention=args.use_attention).to(device)
     RA = Regnet(cir_len*args.up, num_channel).to(device)
     RB = Regnet(args.window_index, num_channel).to(device)
     

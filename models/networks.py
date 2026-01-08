@@ -14,7 +14,7 @@ class DownBlock(nn.Module):
 
 
 class UpBlock(nn.Module):
-    def __init__(self, C_in, C_out, kernel_size, p=0, r=2):
+    def __init__(self, C_in, C_out, kernel_size, p=0, r=2, use_attention=False):
         super(UpBlock, self).__init__()
         C_tmp = C_out * r
         self.conv = nn.Conv1d(C_in, C_tmp, kernel_size, padding=(kernel_size-1)//2)
@@ -22,6 +22,10 @@ class UpBlock(nn.Module):
         self.relu = nn.LeakyReLU(0.2)
         self.drop = nn.Dropout(p)
         self.pixelshuffle = SubPixel1D(r)
+        
+        self.use_attention = use_attention
+        if self.use_attention:
+            self.att = AttentionGate1D(F_g=C_out, F_l=C_out, F_int=C_out // 2)
 
     def forward(self, x, x_up=None):
         x = self.conv(x)
@@ -33,11 +37,42 @@ class UpBlock(nn.Module):
         if x_up is None:
             return x
         else:
+            if self.use_attention:
+                x_up = self.att(g=x, x=x_up)
             return torch.cat((x, x_up), 1)
 
 
+class AttentionGate1D(nn.Module):
+    def __init__(self, F_g, F_l, F_int):
+        super(AttentionGate1D, self).__init__()
+        self.W_g = nn.Sequential(
+            nn.Conv1d(F_g, F_int, kernel_size=1, stride=1, padding=0, bias=True),
+            nn.BatchNorm1d(F_int)
+        )
+        
+        self.W_x = nn.Sequential(
+            nn.Conv1d(F_l, F_int, kernel_size=1, stride=1, padding=0, bias=True),
+            nn.BatchNorm1d(F_int)
+        )
+
+        self.psi = nn.Sequential(
+            nn.Conv1d(F_int, 1, kernel_size=1, stride=1, padding=0, bias=True),
+            nn.BatchNorm1d(1),
+            nn.Sigmoid()
+        )
+        
+        self.relu = nn.ReLU(inplace=True)
+        
+    def forward(self, g, x):
+        g1 = self.W_g(g)
+        x1 = self.W_x(x)
+        psi = self.relu(g1 + x1)
+        psi = self.psi(psi)
+        return x * psi
+
+
 class unet(nn.Module):
-    def __init__(self):
+    def __init__(self, use_attention=False):
         super(unet, self).__init__()
 
         self.down1 = DownBlock(2, 64, 9)
@@ -47,12 +82,12 @@ class unet(nn.Module):
 
         self.bottleneck = DownBlock(512, 512, 5)
         
-        self.up1 = UpBlock(512, 512, 5, r=2)
-        self.up2 = UpBlock(1024, 256, 5, r=2)
-        self.up3 = UpBlock(512, 128, 9, r=2)
-        self.up4 = UpBlock(256, 64, 9, r=2)
+        self.up1 = UpBlock(512, 512, 5, r=2, use_attention=use_attention)
+        self.up2 = UpBlock(1024, 256, 5, r=2, use_attention=use_attention)
+        self.up3 = UpBlock(512, 128, 9, r=2, use_attention=use_attention)
+        self.up4 = UpBlock(256, 64, 9, r=2, use_attention=use_attention)
 
-        self.final = UpBlock(128, 2, 9, r=2)
+        self.final = UpBlock(128, 2, 9, r=2) # 最后一层通常不需要注意力门
 
     def forward(self, x):
         
