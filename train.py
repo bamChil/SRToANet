@@ -12,6 +12,18 @@ from models.interp1d import Interp1d
 interp1d_fn = Interp1d.apply  # use static method
 import os
 import argparse
+import random
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    # 确保卷积操作的可复现性（虽然会稍微影响性能）
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    print(f"Global seed set to: {seed}")
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -71,6 +83,17 @@ def make_parser():
     parser.add_argument('--use_attention', type = str2bool, nargs='?',
       default=False,
       help='whether to use attention mechanism for the super resolution network')
+    
+    parser.add_argument('--use_e2e', type = str2bool, nargs='?',
+      default=False,
+      help='whether to use end-to-end joint optimization')
+    parser.add_argument('--e_e2e', type=int, default=100,
+      help='number of epochs for end-to-end training')
+    parser.add_argument('--lr_e2e', type=float, default=1e-4,
+      help='learning rate for end-to-end training')
+    
+    parser.add_argument('--seed', type=int, default=42,
+      help='random seed for reproducibility')
 
     return parser
 
@@ -207,15 +230,110 @@ def train_Reg(train_loader, G, RA, RB, device, print_interval, win_size, win_idx
     torch.save(RB.state_dict(), model_path_RB)
 
 
+def train_E2E(train_loader, G, RA, RB, device, print_interval, win_size, win_idx, lr, N_epochs, lam, step, folder, use_ori=False):
+    # 联合优化：优化所有模型的参数
+    optimizer = optim.Adam(list(G.parameters()) + list(RA.parameters()) + list(RB.parameters()), lr=lr)
+    exp_lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=step, gamma=0.3)
+    criterion_reg = nn.MSELoss()
+    
+    log_path_e2e = os.path.join(folder, 'loss_log_e2e.txt')
+    model_path_sr = os.path.join(folder, 'sr_e2e.w')
+    model_path_ra = os.path.join(folder, 'ra_e2e.w')
+    model_path_rb = os.path.join(folder, 'rb_e2e.w')
+
+    G.train()
+    RA.train()
+    RB.train()
+
+    for epoch in range(N_epochs):
+        for i, (frame) in enumerate(train_loader):
+            cir_l = frame['cir_l'].float().to(device)
+            cir_h = frame['cir_h'].float().to(device)
+            cfr_h = frame['cfr_h'].float().to(device)
+            dist = frame['dist'].float().to(device)
+            
+            optimizer.zero_grad()
+            
+            # 1. Forward pass - SR
+            cir_h_fake = G(cir_l)
+            loss_f = L2_loss_f(cir_h_fake, cfr_h)
+            loss_t = L2_loss_t_amp(cir_h_fake, cir_h)
+            loss_sr = loss_f + lam * loss_t
+            
+            # 2. Forward pass - Regressor A (Coarse)
+            if use_ori:
+                RA_input = torch.cat((cir_l, cir_h_fake), 1)
+            else:
+                RA_input = cir_h_fake
+            pred_coarse = RA(RA_input)
+            loss_coarse = criterion_reg(pred_coarse, dist)
+            
+            # 3. Forward pass - Regressor B (Fine)
+            # 注意：为了保持端到端梯度流，这里的 interp1d 必须是可微的 (代码中已使用 Interp1d.apply)
+            index = ((pred_coarse > win_size//2) * (pred_coarse < 960-win_size//2)).squeeze()
+            x = 3.75 * torch.arange(0, cir_l.shape[2]).repeat(2, 1).to(device)
+            window = torch.arange(-win_size, win_size, 2*win_size/win_idx).repeat(2, 1).to(device)
+            
+            loss_fine = 0
+            if torch.sum(index) != 0:
+                cir_l_ = cir_l[index]
+                cir_h_fake_ = cir_h_fake[index]
+                pred_coarse_ = pred_coarse[index]
+                x_new = pred_coarse_.unsqueeze(-1) + window.unsqueeze(0)
+                x_rep = x.repeat(cir_h_fake_.shape[0], 1, 1)
+                
+                # 注意：此处不使用 torch.no_grad()，允许梯度传回 G
+                y_new = interp1d(cir_h_fake_, x_rep, x_new)
+                if use_ori:
+                    y_new_ori = interp1d(cir_l_, x_rep, x_new)
+                    y_new = torch.cat((y_new_ori, y_new), 1)
+                
+                dist_ = dist[index]
+                tar_ = dist_ - pred_coarse_
+                pred_fine = RB(y_new)
+                loss_fine = criterion_reg(pred_fine, tar_)
+            
+            # Total Loss
+            loss_total = loss_sr + loss_coarse + loss_fine
+            loss_total.backward()
+            optimizer.step()
+            
+            if (i % print_interval == 0):
+                with open(log_path_e2e, "a") as log_file:
+                    message = '(epoch: %d, iters: %d, total: %.3f, sr: %.3f, coarse: %.3f, fine: %.3f) ' % (
+                        epoch, i, loss_total.item(), loss_sr.item(), loss_coarse.item(), 
+                        loss_fine.item() if isinstance(loss_fine, torch.Tensor) else loss_fine)
+                    print(message)
+                    log_file.write('%s\n' % message)
+
+        exp_lr_scheduler.step()
+
+    print('End-to-End training finished!')
+    torch.save(G.state_dict(), model_path_sr)
+    torch.save(RA.state_dict(), model_path_ra)
+    torch.save(RB.state_dict(), model_path_rb)
+
+
 def train(args):
     
+    # Set seed for reproducibility
+    set_seed(args.seed)
+
     # choose device
     if args.device == 'cpu':
         device = torch.device('cpu')
     else:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-
+    if args.use_attention:
+        print('Using attention mechanism for the super resolution network...')
+    else:
+        print('Not using attention mechanism for the super resolution network...')
+    if args.use_e2e:
+        print('Using end-to-end joint optimization...')
+    else:
+        print('Not using end-to-end joint optimization...')
+    
     # Make the dataset
     dataset_A = dataLoader('data/traindata/Train_x'+str(args.up)+'_'+args.snr+'_'+str(args.bandwidth)+'MHz_A.mat')
     train_loader_A = torch.utils.data.DataLoader(dataset_A, batch_size=args.batch_sr,
@@ -239,10 +357,44 @@ def train(args):
     folder = os.path.join('experiments', args.name)
     if os.path.exists(folder) == False:
         os.makedirs(folder)
-        
-    G_trained = train_SR(train_loader_A, G, device, args.print_interval, args.lr_sr, args.e_sr, args.lam, args.e_sr//4, folder)
-    G_trained.eval()
-    train_Reg(train_loader_B, G_trained, RA, RB, device, args.print_interval, args.window_len, args.window_index, args.lr_sr, args.e_reg, args.e_reg//4, folder, args.use_ori)
+    
+    # Define weight paths
+    sr_path = os.path.join(folder, 'sr.w')
+    ra_path = os.path.join(folder, 'ra.w')
+    rb_path = os.path.join(folder, 'rb.w')
+    sr_e2e_path = os.path.join(folder, 'sr_e2e.w')
+    ra_e2e_path = os.path.join(folder, 'ra_e2e.w')
+    rb_e2e_path = os.path.join(folder, 'rb_e2e.w')
+
+    # Check existence
+    already_original = os.path.exists(sr_path) and os.path.exists(ra_path) and os.path.exists(rb_path)
+    already_e2e = os.path.exists(sr_e2e_path) and os.path.exists(ra_e2e_path) and os.path.exists(rb_path)
+
+    # Resume Logic
+    if args.use_e2e and already_e2e:
+        print(f"End-to-End weights already exist in '{folder}'. Skipping training.")
+        return
+    
+    if not args.use_e2e and already_original:
+        print(f"Original weights already exist in '{folder}'. Skipping training.")
+        return
+
+    if already_original:
+        print(f"Found original weights in '{folder}'. Loading and skipping to E2E phase if requested.")
+        G.load_state_dict(torch.load(sr_path))
+        RA.load_state_dict(torch.load(ra_path))
+        RB.load_state_dict(torch.load(rb_path))
+        G_trained = G
+    else:
+        print("No existing weights found. Starting from scratch...")
+        G_trained = train_SR(train_loader_A, G, device, args.print_interval, args.lr_sr, args.e_sr, args.lam, args.e_sr//4, folder)
+        G_trained.eval()
+        train_Reg(train_loader_B, G_trained, RA, RB, device, args.print_interval, args.window_len, args.window_index, args.lr_sr, args.e_reg, args.e_reg//4, folder, args.use_ori)
+
+    if args.use_e2e:
+        print('Starting End-to-End Joint Optimization...')
+        train_E2E(train_loader_B, G, RA, RB, device, args.print_interval, args.window_len, args.window_index, 
+                  args.lr_e2e, args.e_e2e, args.lam, args.e_e2e//4, folder, args.use_ori)
 
 
 

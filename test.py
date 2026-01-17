@@ -13,6 +13,17 @@ interp1d_fn = Interp1d.apply  # use static method
 import os
 import argparse
 import matplotlib.pyplot as plt
+import random
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    print(f"Global seed set to: {seed}")
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -54,6 +65,13 @@ def make_parser():
     parser.add_argument('--use_attention', type = str2bool, nargs='?',
       default=False,
       help='whether to use attention mechanism for the super resolution network')
+    
+    parser.add_argument('--use_e2e', type = str2bool, nargs='?',
+      default=False,
+      help='whether to use end-to-end joint optimized models')
+    
+    parser.add_argument('--seed', type=int, default=42,
+      help='random seed for reproducibility')
 
     return parser
 
@@ -129,6 +147,9 @@ def plot_cir(cir_l, cir_h, cir_h_fake, pred_coarse, pred_fine, gt, folder_path):
 
 def test(args):
     
+    # Set seed for reproducibility
+    set_seed(args.seed)
+
     # choose device
     if args.device == 'cpu':
         device = torch.device('cpu')
@@ -154,9 +175,14 @@ def test(args):
     RA = Regnet(cir_len*args.up, num_channel).to(device)
     RB = Regnet(args.window_index, num_channel).to(device)
     
-    G.load_state_dict(torch.load(os.path.join(folder, 'sr.w')))
-    RA.load_state_dict(torch.load(os.path.join(folder, 'ra.w')))
-    RB.load_state_dict(torch.load(os.path.join(folder, 'rb.w')))
+    if args.use_e2e:
+        G.load_state_dict(torch.load(os.path.join(folder, 'sr_e2e.w')))
+        RA.load_state_dict(torch.load(os.path.join(folder, 'ra_e2e.w')))
+        RB.load_state_dict(torch.load(os.path.join(folder, 'rb_e2e.w')))
+    else:
+        G.load_state_dict(torch.load(os.path.join(folder, 'sr.w')))
+        RA.load_state_dict(torch.load(os.path.join(folder, 'ra.w')))
+        RB.load_state_dict(torch.load(os.path.join(folder, 'rb.w')))
     
     G.eval()
     RA.eval()
